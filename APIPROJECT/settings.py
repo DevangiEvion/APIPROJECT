@@ -86,7 +86,7 @@ WSGI_APPLICATION = 'APIPROJECT.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'new_apidb',         
+        'NAME': 'APIDB',         
         'USER': 'root',        
         'PASSWORD': 'root',
         'HOST': 'localhost',
