@@ -1,12 +1,25 @@
 from rest_framework import viewsets, generics, permissions,status, status as drf_status
 from rest_framework.response import Response
 from .models import*
-from .serializers import CategorySerializer,ProductSerializer, CartSerializer,OrderSerializer, PurchaseSerializer, ProductReturnSerializer
+from .serializers import CategorySerializer,ProductSerializer, CartSerializer,OrderSerializer, PurchaseSerializer, ProductReturnSerializer,OrderItemSerializer
 from rest_framework import filters
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError
 from django.db import transaction
 from rest_framework.views import APIView
+from datetime import datetime, time
+from django.utils.dateparse import parse_date
+from django.utils import timezone
+from django.db.models import Sum, F, Value, Q
+from django.db.models.functions import Coalesce
+from rest_framework.permissions import IsAuthenticated
+from django.shortcuts import get_object_or_404, render
+from django.http import HttpResponse
+from django.template.loader import render_to_string
+from xhtml2pdf import pisa
+import io
+from django.template.loader import get_template
+
 
 
 # Product Views
@@ -354,9 +367,48 @@ class CartClearView(APIView):
 
 
 # Order views
+from django.shortcuts import get_object_or_404
+from django.db import transaction
+from django.http import JsonResponse
+from products.models import Order, OrderItem, Cart
 
 class OrderView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+
+    @transaction.atomic
+    def create_order(request):
+        user = request.user
+
+        # Get all cart items of the user
+        cart_items = Cart.objects.filter(user=user)
+
+        if not cart_items.exists():
+            return JsonResponse({"error": "Cart is empty"}, status=400)
+
+        # Calculate total price
+        total = sum(item.price for item in cart_items)
+
+        # Create the order
+        order = Order.objects.create(user=user, total=total)
+
+        # Create OrderItems from Cart
+        order_items = []
+        for cart_item in cart_items:
+            order_items.append(OrderItem(
+                order=order,
+                product=cart_item.product,
+                quantity=cart_item.quantity,
+                price=cart_item.price
+            ))
+        OrderItem.objects.bulk_create(order_items)
+
+        # Clear the cart
+        cart_items.delete()
+
+        return JsonResponse({
+            "message": "Order created successfully",
+            "order_id": order.id
+        }, status=201)
 
     def get(self, request, pk=None):
         if pk:
@@ -558,10 +610,6 @@ class ProductReturnViewSet(viewsets.ModelViewSet):
     serializer_class = ProductReturnSerializer
     permission_classes = [permissions.IsAuthenticated]
 
-    def get_queryset(self):
-        # Only return records for logged-in user
-        return ProductReturn.objects.filter(user=self.request.user)
-
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data, context={'request': request})
         if serializer.is_valid():
@@ -574,3 +622,335 @@ class ProductReturnViewSet(viewsets.ModelViewSet):
             "status": False,
             "message": "Validation error."
         }, status=status.HTTP_400_BAD_REQUEST)
+    
+
+# Order Report according to start dates and end dates
+class OrderReportView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if getattr(request.user, "role", None) != "admin":
+            return Response({
+                "status": False,
+                "message": "You do not have permission to generate this report."
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        start_date_str = request.query_params.get('start_date')
+        end_date_str = request.query_params.get('end_date')
+
+        if not start_date_str or not end_date_str:
+            return Response({
+                "status": False,
+                "message": "Both start_date and end_date are required."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        start_date = parse_date(start_date_str)
+        end_date = parse_date(end_date_str)
+
+        if not start_date or not end_date:
+            return Response({
+                "status": False,
+                "message": "Invalid date format. Use YYYY-MM-DD."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        start_datetime = timezone.make_aware(datetime.combine(start_date, time.min))
+        end_datetime = timezone.make_aware(datetime.combine(end_date, time.max))
+
+        orders = (
+            Order.objects.filter(created_at__range=(start_datetime, end_datetime))
+            .prefetch_related("items__product")
+        )
+
+        serializer = OrderSerializer(orders, many=True)
+        total_amount = sum(order.total for order in orders)
+
+        return Response({
+            "status": True,
+            "message": "Orders retrieved successfully.",
+            "start_date": start_date_str,
+            "end_date": end_date_str,
+            "total_amount": total_amount,
+            "orders": serializer.data
+        }, status=status.HTTP_200_OK)
+    
+
+# User Order Report
+class UserOrderReportView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, user_id):
+        if getattr(request.user, "role", None) != "admin" and request.user.id != int(user_id):
+            return Response({
+                "status": False,
+                "message": "You do not have permission to view this report."
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        orders = (
+            Order.objects.filter(user_id=user_id)
+            .prefetch_related("items__product")
+        )
+
+        serializer = OrderSerializer(orders, many=True)
+        total_amount = sum(order.total for order in orders)
+
+        return Response({
+            "status": True,
+            "message": f"Orders for user {user_id} retrieved successfully.",
+            "total_amount": total_amount,
+            "orders": serializer.data
+        }, status=status.HTTP_200_OK)
+
+
+
+# Product Sale Report
+class ProductSalesReportView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if getattr(request.user, "role", None) != "admin":
+            return Response({
+                "status": False,
+                "message": "You do not have permission to view this report."
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        start_date_str = request.query_params.get('start_date')
+        end_date_str = request.query_params.get('end_date')
+
+        if not start_date_str or not end_date_str:
+            return Response({
+                'status': False,
+                'message': 'Both start_date and end_date are required.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        start_date = parse_date(start_date_str)
+        end_date = parse_date(end_date_str)
+
+        if not start_date or not end_date:
+            return Response({
+                'status': False,
+                'message': "Invalid date format. Use YYYY-MM-DD."
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        start_datetime = timezone.make_aware(datetime.combine(start_date, time.min))
+        end_datetime = timezone.make_aware(datetime.combine(end_date, time.max))
+
+        products_data = (
+            Product.objects
+            .annotate(
+                total_sold_quantity=Coalesce(Sum('orderitem__quantity',filter=Q(orderitem__order__created_at__range=(start_datetime, end_datetime))), Value(0)),
+                stock_quantity=F('stock') 
+            )
+            .values(
+                product_name=F('name'),
+                product_price=F('price'),
+                stock_quantity=F('stock_quantity'),
+                total_sold_quantity=F('total_sold_quantity')
+            )
+            .order_by('name')
+        )
+
+        return Response({
+            "status": True,
+            "message": "Products sales report generated successfully.",
+            "start_date": start_date_str,
+            "end_date": end_date_str,
+            "products": list(products_data)
+        }, status=status.HTTP_200_OK)
+    
+    
+# Purchase report
+class PurchaseReportView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if getattr(request.user, 'role', None) != 'admin':
+            return Response({
+                'status':False, 
+                'message': "You do not have permission to view this report."
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        start_date_str = request.query_params.get('start_date')
+        end_date_str = request.query_params.get('end_date')
+        user_id = request.query_params.get('user_id')
+
+        if not start_date_str or not end_date_str:
+            return Response({
+                'status': False,
+                'message' : 'Both start_date and end_date are required(YYYY-MM-DD).'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        start_date = parse_date(start_date_str)
+        end_date = parse_date(end_date_str)
+
+
+        if not start_date or not end_date:
+            return Response({
+                'status': False,
+                'message': "Invalid date format. Use YYYY-MM-DD."
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        start_datetime = timezone.make_aware(datetime.combine(start_date, time.min)) 
+        end_datetime = timezone.make_aware(datetime.combine(end_date, time.max))
+
+        purchases = Purchase.objects.filter(created_at__range=(start_datetime, end_datetime))
+
+        if user_id:
+            purchases = purchases.filter(user_id=user_id)
+
+        serializer = PurchaseSerializer(purchases, many=True)
+        total_amount = sum(p.total_amount for p in purchases)
+
+        return Response({
+            'status' : True,
+            'message' : "Purchase report generated successfully.",
+            'start_date' : start_date_str,
+            'end_date' : end_date_str,
+            'total_amount' : total_amount,
+            'purchases' : serializer.data
+        }, status=status.HTTP_200_OK)
+
+
+# # Invoice 
+# class InvoiceView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request, purchase_id):
+#        purchase = get_object_or_404(Purchase, id=purchase_id)
+
+#        if request.user.role != 'admin' and request.user != purchase.user:
+#            return HttpResponse("Permission denied", status=403)
+       
+#        html = render_to_string("invoice.html", {"purchase": purchase})
+#        return HttpResponse(html)
+
+
+# class InvoicePDFView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def get(self, request, purchase_id):
+#         purchase = get_object_or_404(Purchase, id=purchase_id)
+
+#         if request.user.role != "admin" and request.user != purchase.user:
+#             return HttpResponse("Permission denied", status=403)
+
+#         html = render_to_string("invoice.html", {"purchase": purchase})
+#         response = HttpResponse(content_type="application/pdf")
+#         response["Content-Disposition"] = f"attachment; filename=invoice_{purchase_id}.pdf"
+
+#         pisa.CreatePDF(io.StringIO(html), dest=response)
+#         return response
+
+# def invoice(request):
+#     return render(request, "invoice.html")
+
+
+def invoice_view(request, purchase_id):
+    purchase = get_object_or_404(Purchase, id=purchase_id)
+    return render(request, "invoice.html", {"purchase": purchase})
+
+
+# PDF invoice download
+def invoice_pdf(request, purchase_id):
+    purchase = get_object_or_404(Purchase, id=purchase_id)
+
+    template_path = "invoice.html"
+    context = {"purchase": purchase}
+    template = get_template(template_path)
+    html = template.render(context)
+
+    # Create PDF
+    response = HttpResponse(content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="invoice_{purchase.id}.pdf"'
+
+    pisa_status = pisa.CreatePDF(html, dest=response)
+
+    if pisa_status.err:
+        return HttpResponse("We had some errors <pre>" + html + "</pre>")
+    return response
+
+
+
+# Order Invoice
+# def Order_invoice(request, order_id):
+#     order = Order.objects.prefetch_related("items__product").get(pk=order_id)
+#     items = Cart.objects.filter(order=order).values_list("product_id", flat=True)
+#     product = Product.objects.filter(id__in=items).values()
+#     cart_items = Cart.objects.filter(order=order).select_related("product")
+#     print(cart_items)
+#     return render(request, "Order_invoice.html", {"order": order, "products": product, "cart_items": cart_items})
+
+
+from django.shortcuts import render, get_object_or_404
+from .models import Order, Cart
+
+def Order_invoice(request, order_id):
+    order = get_object_or_404(Order, pk=order_id)
+    cart_items = Cart.objects.filter(order=order).select_related("product")
+    total = [item.product.price * item.quantity for item in cart_items]
+    discount = order.discount
+
+    grand_total = sum(total) - discount
+
+    return render(
+        request,
+        "Order_invoice.html",
+        {
+            "order": order,
+            "products": cart_items,
+            "total": total,
+            "grand_total": grand_total
+        }
+    )
+
+# PDF invoice download
+def Order_invoice_pdf(request, order_id):
+    order = get_object_or_404(
+        Order.objects.prefetch_related("items__product"), id=order_id
+    )
+
+    template = get_template("invoice.html")
+    html = template.render({"order": order})
+
+    response = HttpResponse(content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="invoice_{order.id}.pdf"'
+
+    pisa_status = pisa.CreatePDF(html, dest=response)
+    if pisa_status.err:
+        return HttpResponse("We had some errors <pre>" + html + "</pre>")
+    return response
+
+
+# from django.db import transaction
+
+# @transaction.atomic
+# def create_order_from_cart(user):
+#     cart_items = Cart.objects.filter(user=user, order__isnull=True)
+
+#     if not cart_items.exists():
+#         raise ValueError("No items in cart")
+
+#     # Calculate total
+#     total = sum([item.price * item.quantity for item in cart_items])
+
+#     # Create Order
+#     order = Order.objects.create(
+#         user=user,
+#         total=total,
+#         discount=0,
+#         status="pending",
+#         payment_status="unpaid"
+#     )
+
+#     # Create OrderItems from Cart
+#     for cart_item in cart_items:
+#         OrderItem.objects.create(
+#             order=order,
+#             product=cart_item.product,
+#             quantity=cart_item.quantity,
+#             price=cart_item.product.price
+#         )
+#         # Attach order to cart (optional, if you want to keep track)
+#         cart_item.order = order
+#         cart_item.save()
+
+#     return order

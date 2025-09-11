@@ -76,7 +76,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
-
+ 
     class Meta:
         model = Order
         fields = ['id', 'user', 'total', 'discount', 'status', 'payment_status', 'created_at', 'items']
@@ -319,3 +319,5 @@ class PurchaseSerializer(serializers.ModelSerializer):
         instance.total_amount = total_amount
         instance.save()
         return instance
+
+
