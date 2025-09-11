@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>OrderInvoice #{{ order.id }}</title>
+    <style>
+      body {
+        font-family: "Arial", sans-serif;
+        margin: 0;
+        padding: 20px;
+        background: #f8f9fa;
+      }
+      .invoice-box {
+        background: #fff;
+        padding: 25px;
+        border: 1px solid #ddd;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        max-width: 800px;
+        margin: auto;
+      }
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 2px solid #333;
+        padding-bottom: 15px;
+        margin-bottom: 20px;
+      }
+      .header .company {
+        font-size: 20px;
+        font-weight: bold;
+      }
+      .header .logo {
+        font-size: 24px;
+        color: #007bff;
+        font-weight: bold;
+      }
+      .details {
+        margin-bottom: 20px;
+      }
+      .details p {
+        margin: 4px 0;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 25px;
+      }
+      table th,
+      table td {
+        border: 1px solid #ddd;
+        padding: 10px;
+        text-align: center;
+      }
+      table th {
+        background: #f1f1f1;
+      }
+      .total {
+        text-align: right;
+        font-size: 16px;
+        font-weight: bold;
+      }
+      .footer {
+        border-top: 2px solid #333;
+        padding-top: 10px;
+        text-align: center;
+        font-size: 12px;
+        color: #666;
+      }
+      .download-btn {
+        display: inline-block;
+        padding: 10px 15px;
+        margin-bottom: 15px;
+        background: #007bff;
+        color: #fff;
+        text-decoration: none;
+        border-radius: 5px;
+      }
+      .download-btn:hover {
+        background: #0056b3;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="invoice-box">
+      <!-- Header -->
+      <div class="header">
+        <div class="company">
+          <p>🛒 MyShop Pvt Ltd</p>
+          <p>123, Main Street, City</p>
+          <p>Email: support@myshop.com</p>
+          <p>Phone: +91 98765 43210</p>
+        </div>
+        <div class="logo">INVOICE</div>
+      </div>
+
+      <!-- Download PDF Button -->
+      <a href="{% url 'Order_invoice_pdf' order.id %}" class="download-btn"
+        >Download PDF</a
+      >
+      <!-- Invoice Details -->
+      <div class="details">
+        <p><strong>Invoice ID:</strong> {{ order.id }}</p>
+        <p><strong>Customer:</strong> {{ order.user.username }}</p>
+        <p><strong>Date:</strong> {{ order.created_at|date:"d M Y, H:i" }}</p>
+      </div>
+
+      <!-- Items Table -->
+      <table>
+        <thead>
+          <tr>
+            <th>Sr No</th>
+            <th>Product</th>
+            <th>Qty</th>
+            <th>Price (₹)</th>
+            <th>Total (₹)</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {% for item in products %}
+          <tr>
+            <td>{{ forloop.counter }}</td>
+            <td>{{ item.product.name }}</td>
+            <td>{{ item.quantity }}</td>
+            <td>{{ item.product.price|floatformat:2 }}</td>
+            <td>{{ item.price }}</td>
+          </tr>
+
+          {% empty %}
+          <tr>
+            <td colspan="5">No items in this order.</td>
+          </tr>
+
+          {% endfor %}
+          <!-- <tr>
+            <td colspan="4" align="right"><strong>Subtotal:</strong></td>
+            <td>{{ subtotal|floatformat:2 }}</td>
+          </tr> -->
+          <tr>
+            <td colspan="4" align="right"><strong>Discount:</strong></td>
+            <td>{{ order.discount|floatformat:2 }}</td>
+          </tr>
+          <tr>
+            <td colspan="4" align="right"><strong>Grand Total:</strong></td>
+            <td>{{ grand_total|floatformat:2 }}</td>
+          </tr>
+          <!-- {% for item in products %}
+          <tr>
+            <td>{{ forloop.counter }}</td>
+            <td>{{ item.name }}</td>
+            <td>{{ item.quantity }}</td>
+            <td>{{ item.price|floatformat:2 }}</td>
+            <td>{{ item.line_total|floatformat:2 }}</td>
+          </tr>
+          {% empty %} 
+          <tr>
+            <td colspan="5">No items in this order.</td>
+          </tr>
+          {% endfor %} -->
+        </tbody>
+      </table>
+
+      <!-- Footer -->
+      <div class="footer">
+        <p>Thank you for shopping with us!</p>
+        <p>
+          This is a computer-generated invoice and does not require a signature.
+        </p>
+      </div>
+    </div>
+  </body>
+</html>

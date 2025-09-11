@@ -8,7 +8,7 @@ class User(AbstractBaseUser):
         ('admin', 'Admin'),
         ('user', 'User'),
     )
-
+    is_staff = models.BooleanField(default=False)
     username = models.CharField(max_length=150, unique=True)
     email = models.EmailField(unique=True)
     password = models.CharField(max_length=255)  # Hashed
